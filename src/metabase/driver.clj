@@ -136,18 +136,23 @@
   *  `:expression-aggregations` - Does the driver support using expressions inside aggregations? e.g. something like \"sum(x) + count(y)\" or \"avg(x + y)\"
   *  `:nested-queries` - Does the driver support using a query as the `:source-query` of another MBQL query? Examples are CTEs or subselects in SQL queries.")
 
-  (field-values-lazy-seq ^clojure.lang.Sequential [this, ^FieldInstance field]
+  (^:deprecated field-values-lazy-seq ^clojure.lang.Sequential [this, ^FieldInstance field]
     "Return a lazy sequence of all values of FIELD.
      This is used to implement some methods of the database sync process which require rows of data during execution.
 
   The lazy sequence should not return more than `max-sync-lazy-seq-results`, which is currently `10000`.
-  For drivers that provide a chunked implementation, a recommended chunk size is `field-values-lazy-seq-chunk-size`, which is currently `500`.")
+  For drivers that provide a chunked implementation, a recommended chunk size is `field-values-lazy-seq-chunk-size`, which is currently `500`.
+
+  DEPRCATED: In the future, we expect the sync code to rely on `table-values-sample` instead of
+  `field-values-lazy-seq`, so expect thie method to be removed in the near future. Refrain from
+  using it for new purposes.")
 
   (format-custom-field-name ^String [this, ^String custom-field-name]
-    "*OPTIONAL*. Return the custom name passed via an MBQL `:named` clause so it matches the way it is returned in the results.
-     This is used by the post-processing annotation stage to find the correct metadata to include with fields in the results.
-     The default implementation is `identity`, meaning the resulting field will have exactly the same name as passed to the `:named` clause.
-     Certain drivers like Redshift always lowercase these names, so this method is provided for those situations.")
+    "*OPTIONAL*. Return the custom name passed via an MBQL `:named` clause so it matches the way it is returned in the
+     results. This is used by the post-processing annotation stage to find the correct metadata to include with fields
+     in the results. The default implementation is `identity`, meaning the resulting field will have exactly the same
+     name as passed to the `:named` clause. Certain drivers like Redshift always lowercase these names, so this method
+     is provided for those situations.")
 
   (humanize-connection-error-message ^String [this, ^String message]
     "*OPTIONAL*. Return a humanized (user-facing) version of an connection error message string.
@@ -195,7 +200,13 @@
     "*OPTIONAL*. Return a sequence of *all* the rows in a given TABLE, which is guaranteed to have at least `:name` and `:schema` keys.
      (It is guaranteed too satisfy the `DatabaseMetadataTable` schema in `metabase.sync.interface`.)
      Currently, this is only used for iterating over the values in a `_metabase_metadata` table. As such, the results are not expected to be returned lazily.
-     There is no expectation that the results be returned in any given order."))
+     There is no expectation that the results be returned in any given order.")
+
+  (table-values-sample ^clojure.lang.Sequential [this, ^TableInstance table, fields]
+    "Return a sample of rows in TABLE with the specified FIELDS. This is used to implement some methods of the
+     database sync process which require rows of data during execution.
+
+  The sample should return up to `max-sync-lazy-seq-results` rows, which is currently `10000`."))
 
 
 (def IDriverDefaultsMixin
@@ -208,7 +219,8 @@
    :notify-database-updated           (constantly nil)
    :process-query-in-context          (u/drop-first-arg identity)
    :sync-in-context                   (fn [_ _ f] (f))
-   :table-rows-seq                    (constantly nil)})
+   :table-rows-seq                    (constantly nil)
+   :table-values-sample               (constantly nil)})
 
 
 ;;; ## CONFIG

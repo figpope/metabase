@@ -27,6 +27,7 @@
     :type/Number {:type/Number (number/number-fingerprint values)}
     nil))
 
+;; TODO - deprecate the one-arity version of this function
 (s/defn ^:private ^:always-validate fingerprint :- (s/maybe i/Fingerprint)
   "Generate a 'fingerprint' from a SAMPLE of values."
   ([field :- i/FieldInstance]
@@ -39,20 +40,36 @@
     (when-let [type-specific-fingerprint (type-specific-fingerprint field values)]
       {:type type-specific-fingerprint}))))
 
+(s/defn ^:private ^:always-validate save-fingerprint!
+  [field :- i/FieldInstance, fingerprint :- (s/maybe i/Fingerprint)]
+  (when fingerprint
+    (log/debug (format "Saving fingerprint for %s" (sync-util/name-for-logging field)))
+    ;; All Fields who get new fingerprints should get marked as having the latest fingerprint version, but we'll
+    ;; clear their values for `last_analyzed`. This way we know these fields haven't "completed" analysis for the
+    ;; latest fingerprints.
+    (db/update! Field (u/get-id field)
+      :fingerprint         fingerprint
+      :fingerprint_version i/latest-fingerprint-version
+      :last_analyzed       nil)))
 
-(s/defn ^:private ^:always-validate fingerprint!
-  "Generate and save a fingerprint for a FIELD."
+(s/defn ^:private ^:deprecated ^:always-validate fingerprint!
+  "Generate and save a fingerprint for a FIELD.
+   DEPRECATED: use `save-fingerprint!` instead."
   [field :- i/FieldInstance]
   (sync-util/with-error-handling (format "Error generating fingerprint for %s" (sync-util/name-for-logging field))
-    (when-let [fingerprint (fingerprint field)]
-      (log/debug (format "Saving fingerprint for %s" (sync-util/name-for-logging field)))
-      ;; All Fields who get new fingerprints should get marked as having the latest fingerprint version, but we'll
-      ;; clear their values for `last_analyzed`. This way we know these fields haven't "completed" analysis for the
-      ;; latest fingerprints.
-      (db/update! Field (u/get-id field)
-        :fingerprint         fingerprint
-        :fingerprint_version i/latest-fingerprint-version
-        :last_analyzed       nil))))
+    (save-fingerprint! field (fingerprint field))))
+
+(s/defn ^:private ^:always-validate fingerprint-table!
+  [table :- i/TableInstance, fields :- [i/FieldInstance]]
+  (let [table-sample (sample/basic-table-sample table fields)]
+    (for [field fields]
+      (sync-util/with-error-handling (format "Error generating fingerprint for %s" (sync-util/name-for-logging field))
+        (let [field-sample (->> table-sample
+                                (map (keyword (:name field)))
+                                (filter (complement nil?))
+                                seq)
+              fingerprint  (fingerprint field field-sample)]
+          (save-fingerprint! field fingerprint))))))
 
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
@@ -149,5 +166,4 @@
   "Generate and save fingerprints for all the Fields in TABLE that have not been previously analyzed."
   [table :- i/TableInstance]
   (when-let [fields (fields-to-fingerprint table)]
-    (doseq [field fields]
-      (fingerprint! field))))
+    (fingerprint-table! table fields)))
