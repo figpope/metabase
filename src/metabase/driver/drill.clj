@@ -8,8 +8,6 @@
             [metabase.driver :as driver]
             [metabase.driver.generic-sql :as sql]
             [metabase.driver.generic-sql.util.unprepare :as unp]
-            [metabase.driver.hive-like :as hive-like]
-            [metabase.driver.bigquery :as bigquery]
             [metabase.util :as u]
             [metabase.util.honeysql-extensions :as hx]
             [metabase.query-processor.util :as qputil]
