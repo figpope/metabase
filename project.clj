@@ -16,7 +16,7 @@
                  [org.clojure/core.match "0.3.0-alpha4"]    ; optimized pattern matching library for Clojure
                  [org.clojure/core.memoize "0.5.9"]         ; needed by core.match; has useful FIFO, LRU, etc. caching mechanisms
                  [org.clojure/data.csv "0.1.3"]             ; CSV parsing / generation
-                 [org.apache.drill.exec/drill-jdbc-all "1.10.0" ;
+                 [org.apache.drill.exec/drill-jdbc-all-celmatix "1.11.0" ;
                   :exclusions [org.slf4j/log4j-over-slf4j
                                + org.slf4j/jcl-over-slf4j
                                + org.slf4j/slf4j-api
@@ -99,12 +99,16 @@
              "-Xverify:none"                                ; disable bytecode verification when running in dev so it starts slightly faster
              "-XX:+CMSClassUnloadingEnabled"                ; let Clojure's dynamically generated temporary classes be GC'ed from PermGen
              "-XX:+UseConcMarkSweepGC"                      ; Concurrent Mark Sweep GC needs to be used for Class Unloading (above)
-             "-Djava.awt.headless=true"]                    ; prevent Java icon from randomly popping up in dock when running `lein ring server`
+             "-Djava.awt.headless=true"                     ; prevent Java icon from randomly popping up in dock when running `lein ring server`
+             "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005"]
   :javac-options ["-target" "1.7", "-source" "1.7"]
   :uberjar-name "metabase.jar"
   :ring {:handler metabase.core/app
          :init    metabase.core/init!
+         :auto-reload? true
+         :auto-refresh true
          :destroy metabase.core/destroy}
+
   :eastwood {:exclude-namespaces [:test-paths
                                   metabase.driver.generic-sql] ; ISQLDriver causes Eastwood to fail. Skip this ns until issue is fixed: https://github.com/jonase/eastwood/issues/191
              :add-linters        [:unused-private-vars

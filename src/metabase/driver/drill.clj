@@ -2,54 +2,61 @@
   (:require [clojure.java.jdbc :as jdbc]
             (clojure [set :as set]
                      [string :as s])
+            [clojure.java.jdbc :as jdbc]
+            [clojure.tools.logging :as log]
             (honeysql [core :as hsql]
                       [helpers :as h])
             [metabase.db.spec :as dbspec]
             [metabase.driver :as driver]
+            [metabase.driver.bigquery :as bigquery]
             [metabase.driver.generic-sql :as sql]
             [metabase.driver.generic-sql.util.unprepare :as unp]
+            [metabase.driver.generic-sql.query-processor :refer [IGenericSQLFormattable]]
             [metabase.util :as u]
             [metabase.util.honeysql-extensions :as hx]
+            [metabase.driver.generic-sql.util.unprepare :as unprepare]
             [metabase.query-processor.util :as qputil]
             [toucan.db :as db])
   (:import
     (java.util Collections Date)
-    (metabase.query_processor.interface DateTimeValue Value)))
+    (metabase.query_processor.interface DateTimeValue Value Field)))
 
 (def ^:const column->base-type
   "Map of Drill column types -> Field base types.
    Add more mappings here as you come across them."
   {;; Numeric types
-   :BIGINT :type/BigInteger
-   :BINARY :type/*
-   :BOOLEAN :type/Boolean
-   :DATE :type/Date
-   :DECIMAL :type/Decimal
-   :DEC :type/Decimal
-   :NUMERIC :type/Decimal
-   :FLOAT :type/Float
-   :DOUBLE :type/Float
-   (keyword "DOUBLE PRECISION") :type/Float
-   :INTEGER :type/Integer
-   :INT :type/Integer
-   :INTERVAL :type/*
-   :SMALLINT :type/Integer
-   :TIME :type/Time
-   :TIMESTAMP :type/DateTime
+   :BIGINT                       :type/BigInteger
+   :BINARY                       :type/*
+   :BOOLEAN                      :type/Boolean
+   :DATE                         :type/Date
+   :DECIMAL                      :type/Decimal
+   :DEC                          :type/Decimal
+   :NUMERIC                      :type/Decimal
+   :FLOAT                        :type/Float
+   :DOUBLE                       :type/Float
+   (keyword "DOUBLE PRECISION")  :type/Float
+   :INTEGER                      :type/Integer
+   :INT                          :type/Integer
+   :INTERVAL                     :type/*
+   :SMALLINT                     :type/Integer
+   :TIME                         :type/Time
+   :TIMESTAMP                    :type/DateTime
    (keyword "CHARACTER VARYING") :type/Text
-   (keyword "CHARACTER") :type/Text
-   (keyword "CHAR") :type/Text
-   :VARCHAR :type/Text})
+   (keyword "CHARACTER")         :type/Text
+   (keyword "CHAR")              :type/Text
+   :VARCHAR                      :type/Text})
+
+;; TODO Do we want to include ssl as part of the connection
 
 (defn drill
   "Create a database specification for a Drill cluster. Opts should include
   :drill-connect."
   [{:keys [drill-connect]
-    :or {drill-connect "drillbit=localhost"}
-    :as opts}]
-  (merge {:classname "org.apache.drill.jdbc.Driver" ; must be in classpath
+    :or   {drill-connect "drillbit=localhost"}
+    :as   opts}]
+  (merge {:classname   "org.apache.drill.jdbc.Driver"       ; must be in classpath
           :subprotocol "drill"
-          :subname drill-connect}
+          :subname     drill-connect}
          (dissoc opts :drill-connect)))
 
 (defn- connection-details->spec [details]
@@ -108,36 +115,33 @@
   (drill-unprepare-arg ^String [this]))
 
 (extend-protocol IDrillUnprepare
-  nil     (drill-unprepare-arg [this] "NULL")
-  String  (drill-unprepare-arg [this] (str \' (s/replace this "'" "''") \')) ; escape single-quotes
+  nil (drill-unprepare-arg [this] "NULL")
+  String (drill-unprepare-arg [this] (str \' (s/replace this "'" "''") \')) ; escape single-quotes
   Boolean (drill-unprepare-arg [this] (if this "TRUE" "FALSE"))
-  Number  (drill-unprepare-arg [this] (str this))
-  Date    (drill-unprepare-arg [this] (first (hsql/format
-                                               (hsql/call :to_timestamp
-                                                          (hx/literal (u/date->iso-8601 this))
-                                                          (hx/literal "YYYY-MM-dd''T''HH:mm:ss.SSSZ"))))))
+  Number (drill-unprepare-arg [this] (str this))
+  Date (drill-unprepare-arg [this] (first (hsql/format
+                                            (hsql/call :to_timestamp
+                                                       (hx/literal (u/date->iso-8601 this))
+                                                       (hx/literal "YYYY-MM-dd''T''HH:mm:ss.SSSZ"))))))
 
-(defn- drill-unprepare
-  "Convert a normal SQL `[statement & prepared-statement-args]` vector into a flat, non-prepared statement."
-  ^String [[sql & args]]
-  (loop [sql sql, [arg & more-args, :as args] args]
-    (if-not (seq args)
-      sql
-      (recur (s/replace-first sql #"(?<!\?)\?(?!\?)" (drill-unprepare-arg arg))
-             more-args))))
+(def ^:dynamic *query*
+  "The outer query currently being processed."
+  nil)
 
-(defn qualified-name-components
-  "Return the pieces that represent a path to FIELD, of the form `[table-name parent-fields-name* field-name]`."
-  [{field-name :name, table-id :table_id, parent-id :parent_id}]
-  (conj (vec (if-let [parent (metabase.models.field/Field parent-id)]
-               (qualified-name-components parent)
-               (let [{table-name :name, schema :schema} (db/select-one ['Table :name :schema], :id table-id)]
-                 [table-name])))
-        field-name))
+(defn- driver [] {:pre [(map? *query*)]} (:driver *query*))
 
-(defn field->identifier [field]
-  (apply hsql/qualify (qualified-name-components field)))
+(extend-protocol IGenericSQLFormattable
+  Field
+  (formatted [{:keys [special-type field-name]}]
+    (let [field (keyword (hx/qualify-and-escape-dots field-name))]
+      (cond
+        (isa? special-type :type/UNIXTimestampSeconds)      (sql/unix-timestamp->timestamp (driver) field :seconds)
+        (isa? special-type :type/UNIXTimestampMilliseconds) (sql/unix-timestamp->timestamp (driver) field :milliseconds)
+        :else                                               field)))
+  )
 
+(defn- field->identifier [{field-name :name}]
+  field-name)
 
 ;; This provides an implementation of `prepare-value` that prevents HoneySQL from converting forms to prepared statement parameters (`?`)
 ;; TODO - Move this into `metabase.driver.generic-sql` and document it as an alternate implementation for `prepare-value` (?)
@@ -178,7 +182,7 @@
 
 (defn- unix-timestamp->timestamp [expr seconds-or-milliseconds]
   (case seconds-or-milliseconds
-    :seconds      (hsql/call :to_timestamp expr)
+    :seconds (hsql/call :to_timestamp expr)
     :milliseconds (recur (hx// expr 1000) :seconds)))
 
 (def DrillISQLDriverMixin
@@ -191,35 +195,24 @@
           :prepare-value             (u/drop-first-arg prepare-value)
           :set-timezone-sql          (constantly "SET SESSION TIMEZONE TO %s;")
           :string-length-fn          (u/drop-first-arg string-length-fn)
-          :unix-timestamp->timestamp (u/drop-first-arg unix-timestamp->timestamp)}))
+          :unix-timestamp->timestamp (u/drop-first-arg unix-timestamp->timestamp)
+          :field->identifier         (u/drop-first-arg field->identifier)}))
 
 (u/strict-extend DrillDriver
                  driver/IDriver
                  (merge (sql/IDriverSQLDefaultsMixin)
-                        {:can-connect? (u/drop-first-arg can-connect?)
-                         :date-interval (u/drop-first-arg date-interval)
+                        {:can-connect?       (u/drop-first-arg can-connect?)
+                         :date-interval      (u/drop-first-arg date-interval)
                          :describe-table-fks (constantly #{})
-                         :details-fields (constantly [{:name "drill-connect"
-                                                       :display-name "Drill connect string"
-                                                       :default "drillbit=localhost or zk=localhost:2181/drill/cluster-id"}])
-                         :features (constantly #{:basic-aggregations
-                                                 :standard-deviation-aggregations
-                                                 :foreign-keys
-                                                 :expressions
-                                                 :expression-aggregations
-                                                 :native-parameters})})
+                         :details-fields     (constantly [{:name         "drill-connect"
+                                                           :display-name "Drill connect string"
+                                                           :default      "drillbit=localhost or zk=localhost:2181/drill/cluster-id"}])
+                         :features           (constantly #{:basic-aggregations
+                                                           :standard-deviation-aggregations
+                                                           :foreign-keys
+                                                           :expressions
+                                                           :expression-aggregations
+                                                           :native-parameters})})
                  sql/ISQLDriver DrillISQLDriverMixin)
 
 (driver/register-driver! :drill (DrillDriver.))
-
-;(merge (sql/ISQLDriverDefaultsMixin)
-;       {:apply-aggregation bigquery/apply-aggregation
-;        :column->base-type (u/drop-first-arg column->base-type)
-;        :connection-details->spec (u/drop-first-arg connection-details->spec)
-;        :date (u/drop-first-arg date)
-;        :field->identifier (u/drop-first-arg field->identifier)
-;        :prepare-value (u/drop-first-arg prepare-value)
-;        :quote-style (constantly :mysql)
-;        :current-datetime-fn (u/drop-first-arg (constantly hsql/raw "NOW()"))
-;        :string-length-fn (u/drop-first-arg hive-like/string-length-fn)
-;        :unix-timestamp->timestamp (u/drop-first-arg hive-like/unix-timestamp->timestamp)})

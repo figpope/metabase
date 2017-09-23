@@ -39,7 +39,7 @@
 ;;; +-------------------------------------------------------------------------------------------------------+
 ;;; |                                           QUERY PROCESSOR                                             |
 ;;; +-------------------------------------------------------------------------------------------------------+
-
+()
 (defn- execute-query
   "The pivotal stage of the `process-query` pipeline where the query is actually executed by the driver's Query Processor methods.
    This function takes the fully pre-processed query, runs it, and returns the results, which then run through the various

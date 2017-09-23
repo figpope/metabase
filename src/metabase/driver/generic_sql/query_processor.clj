@@ -67,7 +67,7 @@
      (recur index (:source-query query) (dec aggregation-level)))))
 
 ;; TODO - maybe this fn should be called `->honeysql` instead.
-(defprotocol ^:private IGenericSQLFormattable
+(defprotocol ^:public IGenericSQLFormattable
   (formatted [this]
     "Return an appropriate HoneySQL form for an object."))
 
